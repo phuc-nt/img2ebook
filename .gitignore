@@ -7,3 +7,5 @@ __pycache__/
 node_modules/
 dist/
 .vscode/
+test/
+test_gemini_standalone.py
