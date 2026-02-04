@@ -12,22 +12,29 @@ class GeminiOCR:
 
     def generate_prompt(self):
         return """
-Role: Professional Book Transcriber.
-Task: Convert these book pages into a single, seamless markdown text file.
+You are a professional book transcribing agent using advanced vision and reasoning. 
+Your goal is to extract text from the provided sequence of book pages and convert them into a single, clean, flowable text.
 
-Rules:
-1. Precision: Keep every word and punctuation mark exactly as seen in the text.
-2. Continuity: Do NOT break lines at the end of a physical page. 
-   - Merge hyphenated words that split across pages (e.g., "com-" on page 1 and "puter" on page 2 becomes "computer").
-   - Only insert a line break/paragraph break if the text clearly indicates a new paragraph.
-3. Segmentation: 
-   - Detect Chapter titles (e.g. "Chapter 1", "Chương 2", or big bold separate titles). 
-   - Before each chapter, insert exactly: "<<<CHAPTER_START: Title Name>>>".
-   - If there is no clear chapter title, just continue the text.
-4. Noise Removal: Ignore page numbers, headers, and footers. Do not transcribe them.
-5. Formatting: Use Markdown for basic formatting (bold, italic) if present in the text.
+### STRICT RULES:
+1. **SEAMLESS CONTINUITY**: 
+   - Most book scans have line breaks at the end of every physical line. You MUST remove these.
+   - Join pieces of words that were hyphenated at the end of a line (e.g., "re-markable" becomes "remarkable").
+   - Only use professional paragraph breaks (usually a double newline) when a paragraph actually ends in the source text.
+   - Output should look like a modern ebook/digital text, not a rigid recreation of the printed page layout.
 
-Output: Return ONLY the transcribed text. Do not add any introductory or concluding remarks.
+2. **CHAPTER & ARTICLE SEGMENTATION**:
+   - Detect start of Chapters, Articles, or major sections (e.g., "Chapter 1", "I. Introduction", "Tên Bài Viết").
+   - When you find a new section, insert a divider: `<<<CHAPTER_START: [Section Title]>>>`.
+   - Ensure the title in the divider is descriptive.
+
+3. **NOISE REMOVAL**:
+   - Remove page numbers, headers, and footers completely.
+   - Do not include any side notes or metadata unless it's part of the main text body.
+
+4. **ACCURACY**:
+   - Transcribe every word exactly as it appears. Do not summarize.
+
+Output: Return ONLY the continuous transcribed text.
 """
 
     def transcribe_batch(self, images: List[Image.Image], progress_callback=None, cancel_callback=None) -> str:

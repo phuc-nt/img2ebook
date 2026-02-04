@@ -263,14 +263,27 @@ def process_ocr_conversion(url, api_key):
             
             if not downloaded_files:
                 return {"success": False, "error": "No images found"}
+
+            # NATURAL SORT: Critical for seamless text!
+            # We must ensure Page 1 -> Page 2 -> Page 10 (not 1 -> 10 -> 2)
+            import re
+            def natural_keys(item):
+                text = item['name']
+                return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', text)]
+            
+            downloaded_files.sort(key=natural_keys)
+            logger.info(f"Sorted {len(downloaded_files)} files naturally.")
             
             # Parallel Processing
             gemini = GeminiOCR(api_key) 
             full_text = ""
             
-            # Dynamic Batching Strategy: Target 100 parallel batches (Paid Tier)
+            # BATCHING STRATEGY: Maximize parallelism (up to 100 batches)
+            # - For quality, each batch should have at least 1 image
+            # - Prefer more batches (faster) over larger batches (better context)
+            # - Max 100 concurrent batches (Paid Tier limit)
             total_files = len(downloaded_files)
-            target_concurrency = min(100, total_files)
+            target_concurrency = min(100, total_files)  # Max 100 batches or 1 batch per file
             
             # Calculate roughly equal chunk sizes
             # k is base size, m is remainder to distribute
@@ -350,32 +363,67 @@ def process_ocr_conversion(url, api_key):
                 if res:
                     full_text += res + "\n"
             
-            # Post-processing: Create ZIP or single file
-            current_progress.update({"status": "processing", "percent": 99, "message": "Packaging result..."})
+            # Post-processing: Create timestamped folder with text files
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = f"results/ocr_{timestamp}"
+            os.makedirs(output_dir, exist_ok=True)
             
-            # Simple handling: Save as single file for now, or split by chapter if needed.
-            # Plan says: Split by <<<CHAPTER_START: ...>>> if detected.
+            current_progress.update({"status": "processing", "percent": 99, "message": "Saving results..."})
+            logger.info(f"Creating output directory: {output_dir}")
             
-            output_zip = "output_ocr.zip"
-            with zipfile.ZipFile(output_zip, 'w') as zf:
-                if "<<<CHAPTER_START" in full_text:
-                    # Split logic
-                    parts = full_text.split("<<<CHAPTER_START:")
-                    # First part might be intro or empty
-                    if parts[0].strip():
-                        zf.writestr("00_Intro.txt", parts[0].strip())
-                    
-                    for i, part in enumerate(parts[1:]):
-                        # Format: "Title>>>\nContent"
-                        if ">>>" in part:
-                            title, content = part.split(">>>", 1)
-                            safe_title = "".join([c for c in title.strip() if c.isalnum() or c in (' ', '_')]).strip()
-                            filename = f"{i+1:02d}_{safe_title}.txt"
-                            zf.writestr(filename, content.strip())
+            # Split by chapter if detected, with deduplication
+            if "<<<CHAPTER_START" in full_text:
+                parts = full_text.split("<<<CHAPTER_START:")
+                
+                # Save intro if exists
+                if parts[0].strip():
+                    with open(os.path.join(output_dir, "00_Intro.txt"), 'w', encoding='utf-8') as f:
+                        f.write(parts[0].strip())
+                
+                # Process chapters with deduplication
+                chapters = {}  # {normalized_title: {"title": original, "content": text}}
+                
+                for part in parts[1:]:
+                    if ">>>" in part:
+                        title, content = part.split(">>>", 1)
+                        title = title.strip()
+                        content = content.strip()
+                        
+                        # Normalize for comparison (lowercase, no extra spaces)
+                        normalized = title.lower().replace(" ", "")
+                        
+                        if normalized in chapters:
+                            # Merge with existing chapter
+                            chapters[normalized]["content"] += "\n\n" + content
+                            logger.info(f"Merged duplicate chapter: {title}")
                         else:
-                            zf.writestr(f"part_{i}.txt", part.strip())
-                else:
-                    zf.writestr("full_text.md", full_text)
+                            # New chapter
+                            chapters[normalized] = {"title": title, "content": content}
+                
+                # Write deduplicated chapters
+                for i, (norm_title, data) in enumerate(chapters.items()):
+                    safe_title = "".join([c for c in data["title"] if c.isalnum() or c in (' ', '_')]).strip()
+                    filename = f"{i+1:02d}_{safe_title}.txt"
+                    with open(os.path.join(output_dir, filename), 'w', encoding='utf-8') as f:
+                        f.write(data["content"])
+                    logger.info(f"Created: {filename}")
+            else:
+                with open(os.path.join(output_dir, "full_text.txt"), 'w', encoding='utf-8') as f:
+                    f.write(full_text)
+                logger.info("No chapters detected. Saved as full_text.txt")
+            
+            # For web download, create a ZIP of this folder
+            output_zip = f"{output_dir}.zip"
+            with zipfile.ZipFile(output_zip, 'w') as zf:
+                for root, dirs, files in os.walk(output_dir):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        arcname = os.path.relpath(file_path, output_dir)
+                        zf.write(file_path, arcname)
+            
+            logger.info(f"Results saved to folder: {output_dir}")
+            logger.info(f"Download ZIP created: {output_zip}")
             
         current_progress.update({"status": "complete", "percent": 100, "message": "OCR Complete!"})
         return {"success": True, "download_url": "/api/download"} # We can reuse download endpoint if we overwrite output file or make endpoint dynamic
@@ -488,9 +536,14 @@ def process_conversion(url):
 
 @app.get("/api/download")
 def download_ebook():
-    # Check for zip first (OCR result)
-    if os.path.exists("output_ocr.zip"):
-        return FileResponse("output_ocr.zip", media_type="application/zip", filename="ocr_result.zip")
+    # Check for latest OCR result ZIP in results/ folder
+    import glob
+    ocr_zips = glob.glob("results/ocr_*.zip")
+    if ocr_zips:
+        latest_zip = max(ocr_zips, key=os.path.getmtime)
+        return FileResponse(latest_zip, media_type="application/zip", filename=os.path.basename(latest_zip))
+    
+    # Fallback to PDF if exists
     if os.path.exists("output_ebook.pdf"):
         return FileResponse("output_ebook.pdf", media_type="application/pdf", filename="your_ebook.pdf")
     raise HTTPException(status_code=404, detail="File not found")

@@ -9,3 +9,6 @@ dist/
 .vscode/
 test/
 backend/client_secret.json
+.env
+backend/.env
+results/
