@@ -8,4 +8,4 @@ node_modules/
 dist/
 .vscode/
 test/
-test_gemini_standalone.py
+backend/client_secret.json
